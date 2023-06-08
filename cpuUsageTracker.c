@@ -33,7 +33,8 @@ pthread_cond_t cond_A_P_buffer;
 volatile sig_atomic_t sigterm = 0;
 
 // SIGTERM handler
-void handleInterrupt(){
+void handleInterrupt(int signum){
+    (void)signum;
     sigterm = 1;
     pthread_cond_signal(&cond_R_A_buffer_empty);
     pthread_cond_signal(&cond_R_A_buffer_full);
@@ -41,7 +42,7 @@ void handleInterrupt(){
 }
 
 // Function that reads "/proc/stat" data and allocates it to dynamic array
-char* readProcStat(){
+char* readProcStat(void){
     FILE* procStatFile = fopen("/proc/stat", "r");
     if(procStatFile == NULL){
         pthread_mutex_lock(&mutex_printing);
@@ -53,12 +54,12 @@ char* readProcStat(){
     // Variables for storing Reader - Analyzer data
     char* R_A_buffer = NULL;
     size_t R_A_bufferSize = 0;
-    size_t R_A_bytesRead;
+    ssize_t R_A_bytesRead;
     size_t R_A_totalSize = 0;
 
     // Calculating memory needed for the buffer
-    while((R_A_bytesRead = getline(&R_A_buffer, &R_A_bufferSize, procStatFile)) != (size_t) -1){
-        R_A_totalSize += R_A_bytesRead;
+    while((R_A_bytesRead = getline(&R_A_buffer, &R_A_bufferSize, procStatFile)) > 0){
+        R_A_totalSize += (size_t) R_A_bytesRead;
     }
     // Resetting the position indicator to the beginning of the file to copy the data
     fseek(procStatFile, 0, SEEK_SET);
@@ -74,9 +75,9 @@ char* readProcStat(){
 
     // Storing data in array
     size_t R_A_offset = 0;
-    while ((R_A_bytesRead = getline(&R_A_buffer, &R_A_bufferSize, procStatFile)) != (size_t) -1){
-        memcpy(procStatData + R_A_offset, R_A_buffer, R_A_bytesRead);
-        R_A_offset += R_A_bytesRead;
+    while((R_A_bytesRead = getline(&R_A_buffer, &R_A_bufferSize, procStatFile)) > 0){
+        memcpy(procStatData + R_A_offset, R_A_buffer, (size_t) R_A_bytesRead);
+        R_A_offset += (size_t) R_A_bytesRead;
     }
 
     procStatData[R_A_totalSize] = '\0'; // Null-terminating the string
@@ -87,7 +88,7 @@ char* readProcStat(){
     return procStatData;
 }
 
-void* reader(){
+void* reader(void *args __attribute__((unused))){
     while(!sigterm){
         // Reading "/proc/stat" and storing the data in dynamic array
         pthread_mutex_lock(&mutex_R_A_buffer);
@@ -124,13 +125,18 @@ typedef struct{
     unsigned long guest_nice;
 } CPUStats;
 
+#pragma pack(push, 1) // Pack the structure members with a byte allignment
+
 typedef struct{
      char name[6];
      float usage;
+     char padding[2];
 } CPUUsage;
 
+#pragma pack(pop) // Restore the original alignment settings
+
 // Function reading the number of CPU cores of the system
-short getNumCores(){
+short getNumCores(void){
     short numCores = 0;
     FILE* fp = popen("nproc", "r");
 
@@ -234,7 +240,7 @@ void getPercentageCoreUsage(CPUStats* cpuPreviousStats, CPUStats* cpuStats, CPUU
         idled = idle - prevIdle;
 
         used = totald - idled;
-        CPU_Percentage = fmaxf(0.0f, fminf(100.0f, ((float)used / totald) * 100.0f));
+        CPU_Percentage = fmaxf(0.0f, fminf(100.0f, ((float) used / (float) totald) * 100.0f));
 
         cpuUsage[i].usage = CPU_Percentage;
     }
@@ -242,7 +248,7 @@ void getPercentageCoreUsage(CPUStats* cpuPreviousStats, CPUStats* cpuStats, CPUU
 
 CPUUsage* cpuUsage;
 
-void* analyzer(){
+void* analyzer(void *args __attribute__((unused))){
     // Getting the number of CPU cores
     short numCores = getNumCores();
 
@@ -252,21 +258,21 @@ void* analyzer(){
         pthread_mutex_unlock(&mutex_printing);
     }
     // Allocating memory for CPU stats
-    CPUStats* cpuStats = malloc(numCores * sizeof(CPUStats));
+    CPUStats* cpuStats = (CPUStats*)malloc((unsigned long) numCores * sizeof(CPUStats));
     if(cpuStats == NULL){
         pthread_mutex_lock(&mutex_printing);
         printf("Error allocating memory for CPU stats\n");
         pthread_mutex_unlock(&mutex_printing);
     }
     // Allocating memory for previous CPU stats
-    CPUStats* cpuPreviousStats = malloc(numCores * sizeof(CPUStats));
+    CPUStats* cpuPreviousStats = (CPUStats*)malloc((unsigned long) numCores * sizeof(CPUStats));
     if(cpuPreviousStats == NULL){
         pthread_mutex_lock(&mutex_printing);
         printf("Error allocating memory for CPU previous stats\n");
         pthread_mutex_unlock(&mutex_printing);
     }
     // Allocating memory for percentage CPU stats
-    cpuUsage = malloc(numCores * sizeof(CPUUsage));
+    cpuUsage = (CPUUsage*)malloc((unsigned long) numCores * sizeof(CPUUsage));
     if(cpuUsage == NULL){
         pthread_mutex_lock(&mutex_printing);
         printf("Error allocating memory for percentage CPU stats\n");
@@ -330,24 +336,28 @@ void* analyzer(){
 
 void cpuUsagePrinting(short numCores){
     char line[41];
-    short roundedUsage;
+    size_t roundedUsage;
 
     system("clear");
     printf("+--------------------------------------+\n");
     for(short i = 0; i < numCores; i++){
-        roundedUsage = (int)roundf(cpuUsage[i].usage/5.0f); // Percentage usage rounded in integer range 0-20
+        //roundedUsage = (int)roundf(cpuUsage[i].usage/5.0f); // Percentage usage rounded in integer range 0-20
+        roundedUsage = (size_t)(cpuUsage[i].usage / 5.0f + 0.5f); // Percentage usage rounded in integer range 0-20
         // #-character chain for graphical representation of CPU usage
-        char usageChars[roundedUsage + 1];
+        char* usageChars = malloc((roundedUsage + 1) * sizeof(char));
         memset(usageChars, '#', roundedUsage);
         usageChars[roundedUsage] = '\0';
         // Graphical representation of each core's percentage usage
-        sprintf(line, "| %-5s [%-*s%*s] %6.2f%% |", cpuUsage[i].name, roundedUsage, usageChars, (20 - roundedUsage), "", cpuUsage[i].usage);
+        sprintf(line, "| %-5s [%.*s%*s] %6.2f%% |", cpuUsage[i].name, (int) roundedUsage, usageChars, (20 - (int) roundedUsage), "", (double) cpuUsage[i].usage);
         printf("%s\n", line);
+        
+        free(usageChars);
+        usageChars = NULL;
     }
     printf("+--------------------------------------+\n");
 }
 
-void* printer(){
+void* printer(void *args __attribute__((unused))){
     // Getting the number of CPU cores
     short numCores = getNumCores();
     // Variables for synchronizing 1-second interval between start of each loop's iteration
