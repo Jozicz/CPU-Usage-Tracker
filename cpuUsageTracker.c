@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <signal.h>
+#include <stdbool.h>
 
 pthread_t reader_thread, analyzer_thread, printer_thread, watchdog_thread, logger_thread;
 
@@ -12,12 +13,19 @@ pthread_mutex_t mutex_R_A_buffer;
 // Mutex for printing on the console
 pthread_mutex_t mutex_printing;
 
-// Condition variables for full/empty state of the buffer
+// Conditional variables for reader-analyzer buffer
 pthread_cond_t cond_R_A_buffer_full;
 pthread_cond_t cond_R_A_buffer_empty;
 
-// Global pointer for buffer
+// Global pointer to buffer
 char* procStatData = NULL;
+
+bool should_print_data = 0;
+
+// Mutex for analyzer-printer buffer
+pthread_mutex_t mutex_A_P_buffer;
+// Conditional variable for analyzer-printer buffer
+pthread_cond_t cond_A_P_buffer;
 
 // Flag for catching SIGTERM
 volatile sig_atomic_t sigterm = 0;
@@ -27,6 +35,7 @@ void handleInterrupt(){
     sigterm = 1;
     pthread_cond_signal(&cond_R_A_buffer_empty);
     pthread_cond_signal(&cond_R_A_buffer_full);
+    pthread_cond_signal(&cond_A_P_buffer);
 }
 
 // Function that reads "/proc/stat" data and allocates it to dynamic array
@@ -39,7 +48,7 @@ char* readProcStat(){
         return NULL;
     }
 
-    // Variables for storing data
+    // Variables for storing Reader - Analyzer data
     char* R_A_buffer = NULL;
     size_t R_A_bufferSize = 0;
     size_t R_A_bytesRead;
@@ -65,7 +74,7 @@ char* readProcStat(){
 
     // Storing data in array
     size_t R_A_offset = 0;
-    while ((R_A_bytesRead = getline(&R_A_buffer, &R_A_bufferSize, procStatFile)) != (size_t) -1) {
+    while ((R_A_bytesRead = getline(&R_A_buffer, &R_A_bufferSize, procStatFile)) != (size_t) -1){
         memcpy(procStatData + R_A_offset, R_A_buffer, R_A_bytesRead);
         R_A_offset += R_A_bytesRead;
     }
@@ -87,7 +96,7 @@ void* reader(){
             pthread_cond_wait(&cond_R_A_buffer_empty, &mutex_R_A_buffer);
         }
 
-        if (sigterm) {
+        if (sigterm){
             pthread_mutex_unlock(&mutex_R_A_buffer);
             break;
         }
@@ -121,8 +130,8 @@ typedef struct{
 } CPUUsage;
 
 // Function reading the number of CPU cores of the system
-int getNumCores(){
-    int numCores = 0;
+short getNumCores(){
+    short numCores = 0;
     FILE* fp = popen("nproc", "r");
 
     if(fp == NULL){
@@ -132,7 +141,7 @@ int getNumCores(){
         return -1;
     }
 
-    if(fscanf(fp, "%d", &numCores) != 1){
+    if(fscanf(fp, "%hd", &numCores) != 1){
         pthread_mutex_lock(&mutex_printing);
         printf("Error reading nproc command output\n");
         pthread_mutex_unlock(&mutex_printing);
@@ -145,11 +154,11 @@ int getNumCores(){
 }
 
 // Function saving CPU core data into structure
-void getCoreUsage(CPUStats* cpuStats, int numCores){
+void getCoreUsage(CPUStats* cpuStats, short numCores){
     // Saving individual lines of /proc/stat
     char* line = strtok(procStatData, "\n");
     // Iterating over each line
-    for(int i = 0; i < numCores; i++){
+    for(short i = 0; i < numCores; i++){
         // Skipping total CPU statistics line
         line = strtok(NULL, "\n");
 
@@ -165,8 +174,8 @@ void getCoreUsage(CPUStats* cpuStats, int numCores){
 }
 
 // Function setting initial values of structure elements to 0
-void setInitialCoreUsage(CPUStats* cpuStats, int numCores){
-    for(int i = 0; i < numCores; i++){
+void setInitialCoreUsage(CPUStats* cpuStats, short numCores){
+    for(short i = 0; i < numCores; i++){
         cpuStats[i].user = 0;
         cpuStats[i].nice = 0;
         cpuStats[i].system = 0;
@@ -181,8 +190,8 @@ void setInitialCoreUsage(CPUStats* cpuStats, int numCores){
 }
 
 // Function saving previous core usage values
-void setPreviousCoreUsage(CPUStats* cpuPreviousStats, CPUStats* cpuStats, int numCores){
-    for(int i = 0; i < numCores; i++){
+void setPreviousCoreUsage(CPUStats* cpuPreviousStats, CPUStats* cpuStats, short numCores){
+    for(short i = 0; i < numCores; i++){
         cpuPreviousStats[i].user = cpuStats[i].user;
         cpuPreviousStats[i].nice = cpuStats[i].nice;
         cpuPreviousStats[i].system = cpuStats[i].system;
@@ -197,7 +206,7 @@ void setPreviousCoreUsage(CPUStats* cpuPreviousStats, CPUStats* cpuStats, int nu
 }
 
 // Function calculating percentage core usage
-void getPercentageCoreUsage(CPUStats* cpuPreviousStats, CPUStats* cpuStats, CPUUsage* cpuUsage, int numCores){
+void getPercentageCoreUsage(CPUStats* cpuPreviousStats, CPUStats* cpuStats, CPUUsage* cpuUsage, short numCores){
     unsigned long prevIdle;
     unsigned long idle;
     unsigned long prevNonIdle;
@@ -209,7 +218,7 @@ void getPercentageCoreUsage(CPUStats* cpuPreviousStats, CPUStats* cpuStats, CPUU
     unsigned long used;
     float CPU_Percentage;
 
-    for(int i = 0; i < numCores; i++){
+    for(short i = 0; i < numCores; i++){
         sprintf(cpuUsage[i].name, "cpu%d", i);
 
         prevIdle = cpuPreviousStats[i].idle + cpuPreviousStats[i].iowait;
@@ -231,9 +240,13 @@ void getPercentageCoreUsage(CPUStats* cpuPreviousStats, CPUStats* cpuStats, CPUU
     }
 }
 
+//int numCores;
+CPUUsage* cpuUsage;
+
 void* analyzer(){
     // Getting the number of CPU cores
-    int numCores = getNumCores();
+    short numCores = getNumCores();
+
     if (numCores == -1){
         pthread_mutex_lock(&mutex_printing);
         printf("Error aquiring number of CPU cores\n");
@@ -254,13 +267,13 @@ void* analyzer(){
         pthread_mutex_unlock(&mutex_printing);
     }
     // Allocating memory for percentage CPU stats
-    CPUUsage* cpuUsage = malloc(numCores * sizeof(CPUUsage));
+    cpuUsage = malloc(numCores * sizeof(CPUUsage));
     if(cpuUsage == NULL){
         pthread_mutex_lock(&mutex_printing);
         printf("Error allocating memory for percentage CPU stats\n");
         pthread_mutex_unlock(&mutex_printing);
     }
-    // Setting initial cores' usage to 0
+    // Setting initial cores' usages to 0
     setInitialCoreUsage(cpuStats, numCores);
 
     while(!sigterm){
@@ -271,18 +284,10 @@ void* analyzer(){
             pthread_cond_wait(&cond_R_A_buffer_full, &mutex_R_A_buffer);
         }
 
-        if (sigterm) {
+        if (sigterm){
             pthread_mutex_unlock(&mutex_R_A_buffer);
             break;
         }
-
-        // PLACEHOLDER - printing data in console
-        //pthread_mutex_lock(&mutex_printing);
-        //system("clear");
-        //printf("Data from /proc/stat:\n%s", procStatData);
-        //char* line = strtok(procStatData, "\n");
-        //printf("%s\n", line);
-        //pthread_mutex_unlock(&mutex_printing);
 
         // Collecting core usage data
         setPreviousCoreUsage(cpuPreviousStats, cpuStats, numCores);
@@ -295,29 +300,26 @@ void* analyzer(){
 
         pthread_mutex_unlock(&mutex_R_A_buffer);
 
+        // Storing the data in Analyzer - Printer buffer
+        pthread_mutex_lock(&mutex_A_P_buffer);
+
+        while(should_print_data && !sigterm){
+            pthread_cond_wait(&cond_A_P_buffer, &mutex_A_P_buffer);
+        }
+
+        if (sigterm){
+            pthread_mutex_unlock(&mutex_A_P_buffer);
+            break;
+        }
+
         // Calculating percentage usage for each core
         getPercentageCoreUsage(cpuPreviousStats, cpuStats, cpuUsage, numCores);
+        // Switching flag for printing
+        should_print_data = 1;
 
-        // PLACEHOLDER - printing usage data for each core
-        pthread_mutex_lock(&mutex_printing);
-        system("clear");
-        for (int i = 0; i < numCores; i++) {
-            printf("%s:\n", cpuUsage[i].name);
-            printf("User: %lu\t", cpuStats[i].user);
-            printf("Nice: %lu\t", cpuStats[i].nice);
-            printf("System: %lu\t", cpuStats[i].system);
-            printf("Idle: %lu\n", cpuStats[i].idle);
-            printf("Iowait: %lu\t", cpuStats[i].iowait);
-            printf("Irq: %lu\t", cpuStats[i].irq);
-            printf("Softirq: %lu\t", cpuStats[i].softirq);
-            printf("Steal: %lu\n", cpuStats[i].steal);
-            printf("Guest: %lu\t", cpuStats[i].guest);
-            printf("Guest_nice: %lu\t", cpuStats[i].guest_nice);
-            printf("CPU Percentage: %.2f%%\n\n", cpuUsage[i].usage);
-        }
-        pthread_mutex_unlock(&mutex_printing);
-        
-        sleep(1);
+        pthread_cond_signal(&cond_A_P_buffer);
+
+        pthread_mutex_unlock(&mutex_A_P_buffer);
     }
 
     free(cpuStats);
@@ -330,9 +332,43 @@ void* analyzer(){
     pthread_exit(NULL);
 }
 
-// void* printer(){
-//     pthread_exit(NULL);
-// }
+void* printer(){
+    // Getting the number of CPU cores
+    short numCores = getNumCores();
+
+    while(!sigterm){
+        // Acquiring the data from Analyzer - Printer buffer
+        pthread_mutex_lock(&mutex_A_P_buffer);
+
+        while(!should_print_data && !sigterm){
+            pthread_cond_wait(&cond_A_P_buffer, &mutex_A_P_buffer);
+        }
+
+        if (sigterm){
+            pthread_mutex_unlock(&mutex_A_P_buffer);
+            break;
+        }
+
+        // Printing data
+        pthread_mutex_lock(&mutex_printing);
+        system("clear");
+        for (short i = 0; i < numCores; i++) {
+            printf("%s:\n", cpuUsage[i].name);
+            printf("\tCPU Percentage: %.2f%%\n\n", cpuUsage[i].usage);
+        }
+        pthread_mutex_unlock(&mutex_printing);
+        // Switching flag for calculating
+        should_print_data = 0;
+
+        pthread_cond_signal(&cond_A_P_buffer);
+
+        pthread_mutex_unlock(&mutex_A_P_buffer);
+        
+        sleep(1);
+    }
+    
+    pthread_exit(NULL);
+}
 
 // void* watchdog(){
 //     pthread_exit(NULL);
@@ -350,9 +386,12 @@ int main(){
     pthread_cond_init(&cond_R_A_buffer_full, NULL);
     pthread_cond_init(&cond_R_A_buffer_empty, NULL);
 
+    pthread_mutex_init(&mutex_A_P_buffer, NULL);
+    pthread_cond_init(&cond_A_P_buffer, NULL);
+
     pthread_create(&reader_thread, NULL, reader, NULL);
     pthread_create(&analyzer_thread, NULL, analyzer, NULL);
-    //pthread_create(&printer_thread, NULL, printer, NULL);
+    pthread_create(&printer_thread, NULL, printer, NULL);
     //pthread_create(&watchdog_thread, NULL, watchdog, NULL);
     //pthread_create(&logger_thread, NULL, logger, NULL);
     
@@ -360,7 +399,8 @@ int main(){
     printf("Killed reader\n");
     pthread_join(analyzer_thread, NULL);
     printf("Killed analyzer\n");
-    //pthread_join(printer_thread, NULL);
+    pthread_join(printer_thread, NULL);
+    printf("Killed printer\n");
     //pthread_join(watchdog_thread, NULL);
     //pthread_join(logger_thread, NULL);
 
@@ -368,6 +408,9 @@ int main(){
     pthread_mutex_destroy(&mutex_printing);
     pthread_cond_destroy(&cond_R_A_buffer_full);
     pthread_cond_destroy(&cond_R_A_buffer_empty);
+
+    pthread_mutex_destroy(&mutex_A_P_buffer);
+    pthread_cond_destroy(&cond_A_P_buffer);
 
     return 0;
 }
