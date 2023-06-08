@@ -5,6 +5,8 @@
 #include <string.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <time.h>
+#include <math.h>
 
 pthread_t reader_thread, analyzer_thread, printer_thread, watchdog_thread, logger_thread;
 
@@ -19,7 +21,7 @@ pthread_cond_t cond_R_A_buffer_empty;
 
 // Global pointer to buffer
 char* procStatData = NULL;
-
+// printing/calculating flag
 bool should_print_data = 0;
 
 // Mutex for analyzer-printer buffer
@@ -58,10 +60,8 @@ char* readProcStat(){
     while((R_A_bytesRead = getline(&R_A_buffer, &R_A_bufferSize, procStatFile)) != (size_t) -1){
         R_A_totalSize += R_A_bytesRead;
     }
-
     // Resetting the position indicator to the beginning of the file to copy the data
     fseek(procStatFile, 0, SEEK_SET);
-
     // Allocating memory for "/proc/stat" output
     procStatData = malloc((R_A_totalSize +1) * sizeof(char));
     if(procStatData == NULL){
@@ -234,13 +234,12 @@ void getPercentageCoreUsage(CPUStats* cpuPreviousStats, CPUStats* cpuStats, CPUU
         idled = idle - prevIdle;
 
         used = totald - idled;
-        CPU_Percentage = ((float) used/totald) * 100.0;
+        CPU_Percentage = fmaxf(0.0f, fminf(100.0f, ((float)used / totald) * 100.0f));
 
         cpuUsage[i].usage = CPU_Percentage;
     }
 }
 
-//int numCores;
 CPUUsage* cpuUsage;
 
 void* analyzer(){
@@ -273,7 +272,7 @@ void* analyzer(){
         printf("Error allocating memory for percentage CPU stats\n");
         pthread_mutex_unlock(&mutex_printing);
     }
-    // Setting initial cores' usages to 0
+    // Setting initial cores' usages
     setInitialCoreUsage(cpuStats, numCores);
 
     while(!sigterm){
@@ -288,7 +287,6 @@ void* analyzer(){
             pthread_mutex_unlock(&mutex_R_A_buffer);
             break;
         }
-
         // Collecting core usage data
         setPreviousCoreUsage(cpuPreviousStats, cpuStats, numCores);
         getCoreUsage(cpuStats, numCores);
@@ -299,7 +297,6 @@ void* analyzer(){
         pthread_cond_signal(&cond_R_A_buffer_empty);
 
         pthread_mutex_unlock(&mutex_R_A_buffer);
-
         // Storing the data in Analyzer - Printer buffer
         pthread_mutex_lock(&mutex_A_P_buffer);
 
@@ -311,7 +308,6 @@ void* analyzer(){
             pthread_mutex_unlock(&mutex_A_P_buffer);
             break;
         }
-
         // Calculating percentage usage for each core
         getPercentageCoreUsage(cpuPreviousStats, cpuStats, cpuUsage, numCores);
         // Switching flag for printing
@@ -332,11 +328,35 @@ void* analyzer(){
     pthread_exit(NULL);
 }
 
+void cpuUsagePrinting(short numCores){
+    char line[41];
+    short roundedUsage;
+
+    system("clear");
+    printf("+--------------------------------------+\n");
+    for(short i = 0; i < numCores; i++){
+        roundedUsage = (int)roundf(cpuUsage[i].usage/5.0f); // Percentage usage rounded in integer range 0-20
+        // #-character chain for graphical representation of CPU usage
+        char usageChars[roundedUsage + 1];
+        memset(usageChars, '#', roundedUsage);
+        usageChars[roundedUsage] = '\0';
+        // Graphical representation of each core's percentage usage
+        sprintf(line, "| %-5s [%-*s%*s] %6.2f%% |", cpuUsage[i].name, roundedUsage, usageChars, (20 - roundedUsage), "", cpuUsage[i].usage);
+        printf("%s\n", line);
+    }
+    printf("+--------------------------------------+\n");
+}
+
 void* printer(){
     // Getting the number of CPU cores
     short numCores = getNumCores();
+    // Variables for synchronizing 1-second interval between start of each loop's iteration
+    clock_t startTime;
+    double iterationTime, remainingTime;
 
     while(!sigterm){
+        startTime = clock();
+
         // Acquiring the data from Analyzer - Printer buffer
         pthread_mutex_lock(&mutex_A_P_buffer);
 
@@ -351,11 +371,9 @@ void* printer(){
 
         // Printing data
         pthread_mutex_lock(&mutex_printing);
-        system("clear");
-        for (short i = 0; i < numCores; i++) {
-            printf("%s:\n", cpuUsage[i].name);
-            printf("\tCPU Percentage: %.2f%%\n\n", cpuUsage[i].usage);
-        }
+
+        cpuUsagePrinting(numCores);
+
         pthread_mutex_unlock(&mutex_printing);
         // Switching flag for calculating
         should_print_data = 0;
@@ -364,7 +382,12 @@ void* printer(){
 
         pthread_mutex_unlock(&mutex_A_P_buffer);
         
-        sleep(1);
+        iterationTime = (double)(clock() - startTime) / CLOCKS_PER_SEC;
+        remainingTime = 1.0 - iterationTime;
+
+        if(remainingTime > 0){
+            usleep((unsigned int)(remainingTime * 1000000));
+        }
     }
     
     pthread_exit(NULL);
@@ -380,6 +403,7 @@ void* printer(){
 
 int main(){
     signal(SIGTERM, handleInterrupt);
+    signal(SIGINT, handleInterrupt);
 
     pthread_mutex_init(&mutex_R_A_buffer, NULL);
     pthread_mutex_init(&mutex_printing, NULL);
