@@ -127,27 +127,33 @@ void* reader(void *arg){
     // Setting threads index
     short threadIndex = *(short*)arg;
     while(!sigterm){
+        // Setting flag for watchdog
+        signalThreadActiveState(threadIndex);
         // Reading "/proc/stat" and storing the data in dynamic array
         pthread_mutex_lock(&mutex_R_A_buffer);
 
-        while(procStatData != NULL && !sigterm){
+        /*while(procStatData != NULL && !sigterm){
             //pthread_cond_wait(&cond_R_A_buffer_empty, &mutex_R_A_buffer);
             pthread_cond_wait(&cond_R_A_buffer, &mutex_R_A_buffer);
-        }
+        }*/
 
         if (sigterm){
             pthread_mutex_unlock(&mutex_R_A_buffer);
             break;
         }
 
+        if(procStatData != NULL){
+            pthread_mutex_unlock(&mutex_R_A_buffer);
+            usleep(200000);
+            continue;
+        }
+
         procStatData = readProcStat();
 
         //pthread_cond_signal(&cond_R_A_buffer_full);
-        pthread_cond_signal(&cond_R_A_buffer);
+        //pthread_cond_signal(&cond_R_A_buffer);
 
         pthread_mutex_unlock(&mutex_R_A_buffer);
-        // Setting flag for watchdog
-        signalThreadActiveState(threadIndex);
     }
     free(procStatData);
     pthread_exit(NULL);
@@ -321,17 +327,25 @@ void* analyzer(void *arg){
     setInitialCoreUsage(cpuStats, numCores);
 
     while(!sigterm){
+        // Setting flag for watchdog
+        signalThreadActiveState(threadIndex);
         // Acquiring the data from Reader - Analyzer buffer
         pthread_mutex_lock(&mutex_R_A_buffer);
 
-        while(procStatData == NULL && !sigterm){
+        /*while(procStatData == NULL && !sigterm){
             //pthread_cond_wait(&cond_R_A_buffer_full, &mutex_R_A_buffer);
             pthread_cond_wait(&cond_R_A_buffer, &mutex_R_A_buffer);
-        }
+        }*/
 
         if (sigterm){
             pthread_mutex_unlock(&mutex_R_A_buffer);
             break;
+        }
+
+        if(procStatData == NULL){
+            pthread_mutex_unlock(&mutex_R_A_buffer);
+            usleep(200000);
+            continue;
         }
         // Collecting core usage data
         setPreviousCoreUsage(cpuPreviousStats, cpuStats, numCores);
@@ -341,15 +355,15 @@ void* analyzer(void *arg){
         procStatData = NULL;
 
         //pthread_cond_signal(&cond_R_A_buffer_empty);
-        pthread_cond_signal(&cond_R_A_buffer);
+        //pthread_cond_signal(&cond_R_A_buffer);
 
         pthread_mutex_unlock(&mutex_R_A_buffer);
         // Storing the data in Analyzer - Printer buffer
         pthread_mutex_lock(&mutex_A_P_buffer);
 
-        while(should_print_data && !sigterm){
+        /*while(should_print_data && !sigterm){
             pthread_cond_wait(&cond_A_P_buffer, &mutex_A_P_buffer);
-        }
+        }*/
 
         if (sigterm){
             pthread_mutex_unlock(&mutex_A_P_buffer);
@@ -358,13 +372,11 @@ void* analyzer(void *arg){
         // Calculating percentage usage for each core
         getPercentageCoreUsage(cpuPreviousStats, cpuStats, cpuUsage, numCores);
         // Switching flag for printing
-        should_print_data = 1;
+        //should_print_data = 1;
 
-        pthread_cond_signal(&cond_A_P_buffer);
+        //pthread_cond_signal(&cond_A_P_buffer);
 
         pthread_mutex_unlock(&mutex_A_P_buffer);
-        // Setting flag for watchdog
-        signalThreadActiveState(threadIndex);
     }
 
     free(cpuStats);
@@ -410,14 +422,17 @@ void* printer(void *arg){
     double iterationTime, remainingTime;
 
     while(!sigterm){
+        // Setting flag for watchdog
+        signalThreadActiveState(threadIndex);
+
         startTime = clock();
 
         // Acquiring the data from Analyzer - Printer buffer
         pthread_mutex_lock(&mutex_A_P_buffer);
 
-        while(!should_print_data && !sigterm){
+        /*while(!should_print_data && !sigterm){
             pthread_cond_wait(&cond_A_P_buffer, &mutex_A_P_buffer);
-        }
+        }*/
 
         if (sigterm){
             pthread_mutex_unlock(&mutex_A_P_buffer);
@@ -431,7 +446,7 @@ void* printer(void *arg){
 
         pthread_mutex_unlock(&mutex_printing);
         // Switching flag for calculating
-        should_print_data = 0;
+        //should_print_data = 0;
 
         pthread_cond_signal(&cond_A_P_buffer);
 
@@ -439,13 +454,10 @@ void* printer(void *arg){
         
         iterationTime = (double)(clock() - startTime) / CLOCKS_PER_SEC;
         remainingTime = 1.0 - iterationTime;
-        // Setting flag for watchdog
-        signalThreadActiveState(threadIndex);
         // Sleep for the remainder of 1 second interval
         if(remainingTime > 0){
             usleep((unsigned int)(remainingTime * 1000000));
         }
-        sleep(2);
     }
     
     pthread_exit(NULL);
@@ -481,7 +493,7 @@ void* watchdog(void *args __attribute__((unused))){
             handleInterrupt(0);
 
             pthread_mutex_lock(&mutex_printing);
-            printf("Thread %histopped working\n", interruptFlag);
+            printf("Thread %hi stopped working\n", interruptFlag);
             pthread_mutex_unlock(&mutex_printing);
 
             //pthread_mutex_unlock(&mutex_watchdog);
