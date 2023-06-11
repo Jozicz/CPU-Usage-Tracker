@@ -32,6 +32,11 @@ pthread_mutex_t mutex_A_P_buffer;
 // Conditional variable for analyzer-printer buffer
 pthread_cond_t cond_A_P_buffer;
 
+// Mutex for sending messages to logger
+pthread_mutex_t mutex_logging;
+// Conditional variable for message reading
+pthread_cond_t cond_messageInQueue;
+
 // Flag for catching SIGTERM
 volatile sig_atomic_t sigterm = 0;
 
@@ -41,6 +46,7 @@ void handleInterrupt(int signum){
     sigterm = 1;
     pthread_cond_signal(&cond_R_A_buffer);
     pthread_cond_signal(&cond_A_P_buffer);
+    pthread_cond_signal(&cond_messageInQueue);
 }
 
 // Thread indexes and flags for watchdog
@@ -52,6 +58,51 @@ long threadFlagTimes[NUM_THREADS];
 // Conditional variables for watchdog
 atomic_bool watchdogPriority = false;
 int flagArrayInUse = 0;
+
+// Variables for logger
+#define MAX_MESSAGE_LENGTH 100
+#define MAX_QUEUE_SIZE 20
+
+typedef struct{
+    char message[MAX_MESSAGE_LENGTH];
+    char padding[4];
+    struct timespec timestamp;
+} Message;
+
+typedef struct{
+    Message messages[MAX_QUEUE_SIZE];
+    int front;
+    int rear;
+    int count;
+    char padding[4];
+} MessageQueue;
+
+// Message queue initialization
+MessageQueue messageQueue;
+
+void enqueueMessage(const char* message){
+    pthread_mutex_lock(&mutex_logging);
+
+    if(messageQueue.count == MAX_QUEUE_SIZE){
+        pthread_mutex_unlock(&mutex_logging);
+        return;
+    }
+
+    Message newMessage;
+    // Enqueueing the message
+    strncpy(newMessage.message, message, MAX_MESSAGE_LENGTH - 1);
+    newMessage.message[MAX_MESSAGE_LENGTH - 1] = '\0'; // Null termination
+
+    clock_gettime(CLOCK_REALTIME, &(newMessage.timestamp)); // Time of creation
+
+    messageQueue.messages[messageQueue.rear] = newMessage;
+    messageQueue.rear = (messageQueue.rear + 1) % MAX_QUEUE_SIZE;
+    messageQueue.count++;
+    // Signal the logger that new message is available
+    pthread_cond_signal(&cond_messageInQueue);
+
+    pthread_mutex_unlock(&mutex_logging);
+}
 
 void signalThreadActiveState(short threadIndex){
     clock_t time;
@@ -77,7 +128,11 @@ char* readProcStat(void){
     FILE* procStatFile = fopen("/proc/stat", "r");
     if(procStatFile == NULL){
         pthread_mutex_lock(&mutex_printing);
-        printf("Error opening /proc/stat\n");
+
+        const char* message = "Error opening /proc/stat";
+        printf("%s\n", message);
+        enqueueMessage(message);
+
         pthread_mutex_unlock(&mutex_printing);
         return NULL;
     }
@@ -98,7 +153,11 @@ char* readProcStat(void){
     procStatData = malloc((R_A_totalSize +1) * sizeof(char));
     if(procStatData == NULL){
         pthread_mutex_lock(&mutex_printing);
-        printf("Error allocating memory for /proc/stat\n");
+
+        const char* message = "Error allocating memory for /proc/stat";
+        printf("%s\n", message);
+        enqueueMessage(message);
+
         pthread_mutex_unlock(&mutex_printing);
         fclose(procStatFile);
         return NULL;
@@ -122,6 +181,9 @@ char* readProcStat(void){
 void* reader(void *arg){
     // Setting threads index
     short threadIndex = *(short*)arg;
+    // Setting logger message
+    const char* defaultMessage = "Reader: /proc/stat raw data read and sent";
+
     while(!sigterm){
         // Reading "/proc/stat" and storing the data in dynamic array
         pthread_mutex_lock(&mutex_R_A_buffer);
@@ -136,12 +198,14 @@ void* reader(void *arg){
         }
         // Setting flag for watchdog
         signalThreadActiveState(threadIndex);
-
+        
         procStatData = readProcStat();
 
         pthread_cond_signal(&cond_R_A_buffer);
 
         pthread_mutex_unlock(&mutex_R_A_buffer);
+        // Sending message to logger
+        enqueueMessage(defaultMessage);
     }
 
     pthread_exit(NULL);
@@ -173,14 +237,22 @@ short getNumCores(void){
 
     if(fp == NULL){
         pthread_mutex_lock(&mutex_printing);
-        printf("Error executing nproc command\n");
+
+        const char* message = "Error executing nproc command";
+        printf("%s\n", message);
+        enqueueMessage(message);
+
         pthread_mutex_unlock(&mutex_printing);
         return -1;
     }
 
     if(fscanf(fp, "%hd", &numCores) != 1){
         pthread_mutex_lock(&mutex_printing);
-        printf("Error reading nproc command output\n");
+
+        const char* message = "Error reading nproc command output";
+        printf("%s\n", message);
+        enqueueMessage(message);
+        
         pthread_mutex_unlock(&mutex_printing);
         return -1;
     }
@@ -201,7 +273,11 @@ void getCoreUsage(CPUStats* cpuStats, short numCores){
 
         if (line == NULL) {
             pthread_mutex_lock(&mutex_printing);
-            printf("Insufficient data for all cores\n");
+
+            const char* message = "Analyzer: Insufficient data for all cores";
+            printf("%s\n", message);
+            enqueueMessage(message);
+            
             pthread_mutex_unlock(&mutex_printing);
             return;
         }
@@ -284,31 +360,49 @@ void* analyzer(void *arg){
     short threadIndex = *(short*)arg;
     // Getting the number of CPU cores
     short numCores = getNumCores();
+    // Setting logger message
+    const char* defaultMessage = "Analyzer: CPU percentage usage data calculated and sent";
 
     if (numCores == -1){
         pthread_mutex_lock(&mutex_printing);
-        printf("Error aquiring number of CPU cores\n");
+
+        const char* message = "Analyzer: Error aquiring number of CPU cores";
+        printf("%s\n", message);
+        enqueueMessage(message);
+        
         pthread_mutex_unlock(&mutex_printing);
     }
     // Allocating memory for CPU stats
     CPUStats* cpuStats = (CPUStats*)malloc((unsigned long) numCores * sizeof(CPUStats));
     if(cpuStats == NULL){
         pthread_mutex_lock(&mutex_printing);
-        printf("Error allocating memory for CPU stats\n");
+
+        const char* message = "Analyzer: Error allocating memory for CPU stats";
+        printf("%s\n", message);
+        enqueueMessage(message);
+        
         pthread_mutex_unlock(&mutex_printing);
     }
     // Allocating memory for previous CPU stats
     CPUStats* cpuPreviousStats = (CPUStats*)malloc((unsigned long) numCores * sizeof(CPUStats));
     if(cpuPreviousStats == NULL){
         pthread_mutex_lock(&mutex_printing);
-        printf("Error allocating memory for CPU previous stats\n");
+
+        const char* message = "Analyzer: Error allocating memory for CPU previous stats";
+        printf("%s\n", message);
+        enqueueMessage(message);
+
         pthread_mutex_unlock(&mutex_printing);
     }
     // Allocating memory for percentage CPU stats
     cpuUsage = (CPUUsage*)malloc((unsigned long) numCores * sizeof(CPUUsage));
     if(cpuUsage == NULL){
         pthread_mutex_lock(&mutex_printing);
-        printf("Error allocating memory for percentage CPU stats\n");
+
+        const char* message = "Analyzer: Error allocating memory for percentage CPU stats";
+        printf("%s\n", message);
+        enqueueMessage(message);
+        
         pthread_mutex_unlock(&mutex_printing);
     }
     // Setting initial cores' usages
@@ -349,8 +443,6 @@ void* analyzer(void *arg){
             pthread_mutex_unlock(&mutex_A_P_buffer);
             break;
         }
-        // Setting flag for watchdog
-        //signalThreadActiveState(threadIndex);
         // Calculating percentage usage for each core
         getPercentageCoreUsage(cpuPreviousStats, cpuStats, cpuUsage, numCores);
         // Setting flag for printing
@@ -359,6 +451,8 @@ void* analyzer(void *arg){
         pthread_cond_signal(&cond_A_P_buffer);
 
         pthread_mutex_unlock(&mutex_A_P_buffer);
+        // Sending message to logger
+        enqueueMessage(defaultMessage);
     }
     
     free(cpuStats);
@@ -396,6 +490,8 @@ void* printer(void *arg){
     short threadIndex = *(short*)arg;
     // Getting the number of CPU cores
     short numCores = getNumCores();
+    // Setting logger message
+    const char* defaultMessage = "Printer: CPU usage percentage data received and printed";
     // Variables for synchronizing 1-second interval between start of each loop's iteration
     clock_t startTime;
     double iterationTime, remainingTime;
@@ -427,6 +523,8 @@ void* printer(void *arg){
         pthread_cond_signal(&cond_A_P_buffer);
 
         pthread_mutex_unlock(&mutex_A_P_buffer);
+        // Sending message to logger
+        enqueueMessage(defaultMessage);
         
         iterationTime = (double) (clock() - startTime) / CLOCKS_PER_SEC;
         remainingTime = 1.0 - iterationTime;
@@ -481,13 +579,16 @@ void* watchdog(void *args __attribute__((unused))){
 
         if(interruptFlag != -1){
             handleInterrupt(0); // Shutdown the process
+            char message[MAX_MESSAGE_LENGTH];
 
             pthread_mutex_lock(&mutex_printing);
 
             for(short i = 0; i < NUM_THREADS; i++){
                 //printf("Thread %hi's last notification time: %ld\n", i, threadFlagTimes[i]);
                 if(threadFlags[i] == 0){
-                    printf("Thread %hi stopped working\n", i);
+                    sprintf(message, "Thread %hi stopped working", i);
+                    printf("%s\n", message);
+                    enqueueMessage(message);
 
                     if((oldestNotification - threadFlagTimes[i]) > 0){
                         oldestNotification = threadFlagTimes[i];
@@ -495,8 +596,9 @@ void* watchdog(void *args __attribute__((unused))){
                     }
                 }
             }
-
-            printf("Most probable culprit: Thread %hi\n", interruptFlag);
+            sprintf(message, "Most probable culprit: Thread %hi", interruptFlag);
+            printf("%s\n", message);
+            enqueueMessage(message);
 
             pthread_mutex_unlock(&mutex_printing);
             break;
@@ -523,6 +625,55 @@ void* watchdog(void *args __attribute__((unused))){
     pthread_exit(NULL);
 }
 
+void* logger(void *args __attribute__((unused))){
+    // Getting current time for filename
+    time_t currentTime = time(NULL);
+    struct tm* localTime = localtime(&currentTime);
+    // Creating log file
+    char logFilename[100];
+    strftime(logFilename, sizeof(logFilename), "logs/log_%Y-%m-%d_%H-%M-%S.txt", localTime);
+
+    FILE* logFile = fopen(logFilename, "w");
+    
+    if(logFile == NULL){
+        handleInterrupt(0);
+
+        pthread_mutex_lock(&mutex_printing);
+        printf("Error creating log file\n");
+        pthread_mutex_unlock(&mutex_printing);
+
+        pthread_exit(NULL);
+    }
+
+    while(true){
+        pthread_mutex_lock(&mutex_logging);
+        // Waiting until there's a message in the queue
+        while(messageQueue.count == 0 && !sigterm){
+            pthread_cond_wait(&cond_messageInQueue, &mutex_logging);
+        }
+
+        if(messageQueue.count == 0 && sigterm){
+            break;
+        }
+        // Dequeue message from queue
+        Message message = messageQueue.messages[messageQueue.front];
+        messageQueue.front = (messageQueue.front + 1) % MAX_QUEUE_SIZE;
+        messageQueue.count--;
+
+        pthread_mutex_unlock(&mutex_logging);
+        // Logging message
+        time_t timestampSec = message.timestamp.tv_sec;
+        struct tm* messageTimestamp = localtime(&timestampSec);
+        char timestamp[9];
+        strftime(timestamp, sizeof(timestamp), "%H:%M:%S", messageTimestamp);
+
+        fprintf(logFile, "%s\t%s\n", timestamp, message.message);
+    }
+    fclose(logFile);
+
+    pthread_exit(NULL);
+}
+
 int main(){
     signal(SIGTERM, handleInterrupt);
     signal(SIGINT, handleInterrupt);
@@ -534,6 +685,9 @@ int main(){
 
     pthread_mutex_init(&mutex_A_P_buffer, NULL);
     pthread_cond_init(&cond_A_P_buffer, NULL);
+
+    pthread_mutex_init(&mutex_logging, NULL);
+    pthread_cond_init(&cond_messageInQueue, NULL);
     // Handling thread indexes and flags for watchdog
     short threadIndexes[3];
     for(short i = 0; i < NUM_THREADS; i++){
@@ -541,12 +695,16 @@ int main(){
         threadFlagTimes[i] = clock();
         threadIndexes[i] = i;
     }
+    // Initializing message queue
+    messageQueue.front = 0;
+    messageQueue.rear = 0;
+    messageQueue.count = 0;
 
     pthread_create(&reader_thread, NULL, reader, (void*)&threadIndexes[0]);
     pthread_create(&analyzer_thread, NULL, analyzer, (void*)&threadIndexes[1]);
     pthread_create(&printer_thread, NULL, printer, (void*)&threadIndexes[2]);
     pthread_create(&watchdog_thread, NULL, watchdog, NULL);
-    //pthread_create(&logger_thread, NULL, logger, NULL);
+    pthread_create(&logger_thread, NULL, logger, NULL);
     
     pthread_join(reader_thread, NULL);
     printf("Killed reader\n");
@@ -556,7 +714,8 @@ int main(){
     printf("Killed printer\n");
     pthread_join(watchdog_thread, NULL);
     printf("Killed watchdog\n");
-    //pthread_join(logger_thread, NULL);
+    pthread_join(logger_thread, NULL);
+    printf("Killed logger\n");
 
     pthread_mutex_destroy(&mutex_R_A_buffer);
     pthread_mutex_destroy(&mutex_printing);
