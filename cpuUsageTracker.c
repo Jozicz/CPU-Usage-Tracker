@@ -37,18 +37,6 @@ pthread_mutex_t mutex_logging;
 // Conditional variable for message reading
 pthread_cond_t cond_messageInQueue;
 
-// Flag for catching SIGTERM
-volatile sig_atomic_t sigterm = 0;
-
-// SIGTERM handler
-void handleInterrupt(int signum){
-    (void)signum;
-    sigterm = 1;
-    pthread_cond_signal(&cond_R_A_buffer);
-    pthread_cond_signal(&cond_A_P_buffer);
-    pthread_cond_signal(&cond_messageInQueue);
-}
-
 // Thread indexes and flags for watchdog
 #define NUM_THREADS 3
 
@@ -102,6 +90,22 @@ void enqueueMessage(const char* message){
     pthread_cond_signal(&cond_messageInQueue);
 
     pthread_mutex_unlock(&mutex_logging);
+}
+
+// Flag for catching SIGTERM
+volatile sig_atomic_t sigterm = 0;
+
+// SIGTERM handler
+void handleInterrupt(int signum){
+    (void)signum;
+    sigterm = 1;
+    pthread_cond_signal(&cond_R_A_buffer);
+    pthread_cond_signal(&cond_A_P_buffer);
+    pthread_cond_signal(&cond_messageInQueue);
+
+    const char* message = "SIGTERM signal caught - killing all threads";
+    // Sending message to logger
+    enqueueMessage(message);
 }
 
 void signalThreadActiveState(short threadIndex){
@@ -361,7 +365,8 @@ void* analyzer(void *arg){
     // Getting the number of CPU cores
     short numCores = getNumCores();
     // Setting logger message
-    const char* defaultMessage = "Analyzer: CPU percentage usage data calculated and sent";
+    const char* defaultMessage1 = "Analyzer: CPU percentage usage data calculated";
+    const char* defaultMessage2 = "Analyzer: CPU percentage usage data sent to printer";
 
     if (numCores == -1){
         pthread_mutex_lock(&mutex_printing);
@@ -429,15 +434,24 @@ void* analyzer(void *arg){
         free(procStatData);
         procStatData = NULL;
 
-        pthread_cond_signal(&cond_R_A_buffer);
+        //pthread_cond_signal(&cond_R_A_buffer);
 
         pthread_mutex_unlock(&mutex_R_A_buffer);
+        // Sending message to logger
+        enqueueMessage(defaultMessage1);
         // Storing the data in Analyzer - Printer buffer
         pthread_mutex_lock(&mutex_A_P_buffer);
+        
+        /*if(should_print_data){
+            pthread_mutex_unlock(&mutex_A_P_buffer);
+            pthread_cond_signal(&cond_A_P_buffer);
+            usleep(100000);
+            continue;
+        }*/
 
-        while(should_print_data && !sigterm){
-            pthread_cond_wait(&cond_A_P_buffer, &mutex_A_P_buffer);
-        }
+        //while(should_print_data && !sigterm){
+        //    pthread_cond_wait(&cond_A_P_buffer, &mutex_A_P_buffer);
+        //}
 
         if (sigterm){
             pthread_mutex_unlock(&mutex_A_P_buffer);
@@ -452,7 +466,7 @@ void* analyzer(void *arg){
 
         pthread_mutex_unlock(&mutex_A_P_buffer);
         // Sending message to logger
-        enqueueMessage(defaultMessage);
+        enqueueMessage(defaultMessage2);
     }
     
     free(cpuStats);
@@ -520,7 +534,7 @@ void* printer(void *arg){
         // Setting flag for calculating
         should_print_data = 0;
 
-        pthread_cond_signal(&cond_A_P_buffer);
+        //pthread_cond_signal(&cond_A_P_buffer);
 
         pthread_mutex_unlock(&mutex_A_P_buffer);
         // Sending message to logger
@@ -532,6 +546,8 @@ void* printer(void *arg){
         if(remainingTime > 0){
             usleep((unsigned int)(remainingTime * 1000000));
         }
+
+        pthread_cond_signal(&cond_R_A_buffer);
     }
 
     free(cpuUsage);
