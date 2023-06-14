@@ -11,20 +11,11 @@
 // Global pointer to buffer
 char* procStatData = NULL;
 
-pthread_mutex_t mutex_R_A_buffer;
-pthread_cond_t cond_R_A_buffer;
-
 // Function that reads "/proc/stat" data and allocates it to dynamic array
 char* readProcStat(void){
     FILE* procStatFile = fopen("/proc/stat", "r");
     if(procStatFile == NULL){
-        pthread_mutex_lock(&mutex_printing);
-
-        const char* message = "*** Error opening /proc/stat\n";
-        printf("%s\n", message);
-        enqueueMessage(message);
-
-        pthread_mutex_unlock(&mutex_printing);
+        printErrorMessage("*** Error opening /proc/stat\n");
         return NULL;
     }
 
@@ -43,13 +34,7 @@ char* readProcStat(void){
     // Allocating memory for "/proc/stat" output
     procStatData = malloc((R_A_totalSize +1) * sizeof(char));
     if(procStatData == NULL){
-        pthread_mutex_lock(&mutex_printing);
-
-        const char* message = "*** Error allocating memory for /proc/stat\n";
-        printf("%s\n", message);
-        enqueueMessage(message);
-
-        pthread_mutex_unlock(&mutex_printing);
+        printErrorMessage("*** Error allocating memory for /proc/stat\n");
         fclose(procStatFile);
         return NULL;
     }

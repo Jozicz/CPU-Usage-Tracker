@@ -11,9 +11,6 @@
 #include <math.h>
 #include <stdbool.h>
 
-pthread_mutex_t mutex_A_P_buffer;
-pthread_cond_t cond_A_P_buffer;
-
 CPUUsage* cpuUsage;
 
 bool should_print_data = 0;
@@ -23,24 +20,12 @@ short getNumCores(void){
     FILE* fp = popen("nproc", "r");
 
     if(fp == NULL){
-        pthread_mutex_lock(&mutex_printing);
-
-        const char* message = "*** Error executing nproc command\n";
-        printf("%s\n", message);
-        enqueueMessage(message);
-
-        pthread_mutex_unlock(&mutex_printing);
+        printErrorMessage("*** Error executing nproc command\n");
         return -1;
     }
 
     if(fscanf(fp, "%hd", &numCores) != 1){
-        pthread_mutex_lock(&mutex_printing);
-
-        const char* message = "*** Error reading nproc command output\n";
-        printf("%s\n", message);
-        enqueueMessage(message);
-        
-        pthread_mutex_unlock(&mutex_printing);
+        printErrorMessage("*** Error reading nproc command output\n");
         return -1;
     }
 
@@ -57,33 +42,12 @@ void getCoreUsage(CPUStats* cpuStats, short numCores){
         // Skipping total CPU statistics line
         line = strtok(NULL, "\n");
 
-        if (line == NULL) {
-            pthread_mutex_lock(&mutex_printing);
-
-            const char* message = "*** Analyzer: Insufficient data for all cores\n";
-            printf("%s\n", message);
-            enqueueMessage(message);
-            
-            pthread_mutex_unlock(&mutex_printing);
+        if (line == NULL){
+            printErrorMessage("*** Analyzer: Insufficient data for all cores\n");
             return;
         }
         // Populating the structures
         sscanf(line, "cpu%*d %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu", &cpuStats[i].user, &cpuStats[i].nice, &cpuStats[i].system, &cpuStats[i].idle, &cpuStats[i].iowait, &cpuStats[i].irq, &cpuStats[i].softirq, &cpuStats[i].steal, &cpuStats[i].guest, &cpuStats[i].guest_nice);
-    }
-}
-
-void setInitialCoreUsage(CPUStats* cpuStats, short numCores){
-    for(short i = 0; i < numCores; i++){
-        cpuStats[i].user = 0;
-        cpuStats[i].nice = 0;
-        cpuStats[i].system = 0;
-        cpuStats[i].idle = 0;
-        cpuStats[i].iowait = 0;
-        cpuStats[i].irq = 0;
-        cpuStats[i].softirq = 0;
-        cpuStats[i].steal = 0;
-        cpuStats[i].guest = 0;
-        cpuStats[i].guest_nice = 0;
     }
 }
 
@@ -103,15 +67,7 @@ void setPreviousCoreUsage(CPUStats* cpuPreviousStats, CPUStats* cpuStats, short 
 }
 
 void getPercentageCoreUsage(CPUStats* cpuPreviousStats, CPUStats* cpuStats, short numCores){
-    unsigned long prevIdle;
-    unsigned long idle;
-    unsigned long prevNonIdle;
-    unsigned long nonIdle;
-    unsigned long prevTotal;
-    unsigned long total;
-    unsigned long totald;
-    unsigned long idled;
-    unsigned long used;
+    unsigned long prevIdle, idle, prevNonIdle, nonIdle, prevTotal, total, totald, idled, used;
     float CPU_Percentage;
 
     for(short i = 0; i < numCores; i++){
@@ -146,49 +102,32 @@ void* analyzer(void *arg){
     const char* defaultMessage2 = "Analyzer: CPU percentage usage data sent to printer";
 
     if (numCores == -1){
-        pthread_mutex_lock(&mutex_printing);
-
-        const char* message = "*** Analyzer: Error aquiring number of CPU cores\n";
-        printf("%s\n", message);
-        enqueueMessage(message);
-        
-        pthread_mutex_unlock(&mutex_printing);
+        printErrorMessage("*** Analyzer: Error aquiring number of CPU cores\n");
+        pthread_exit(NULL);
     }
     // Allocating memory for CPU stats
-    CPUStats* cpuStats = (CPUStats*)malloc((unsigned long) numCores * sizeof(CPUStats));
+    CPUStats* cpuStats = (CPUStats*)calloc((size_t)numCores, sizeof(CPUStats));
     if(cpuStats == NULL){
-        pthread_mutex_lock(&mutex_printing);
-
-        const char* message = "*** Analyzer: Error allocating memory for CPU stats\n";
-        printf("%s\n", message);
-        enqueueMessage(message);
-        
-        pthread_mutex_unlock(&mutex_printing);
+        printErrorMessage("*** Analyzer: Error allocating memory for CPU stats\n");
+        pthread_exit(NULL);
     }
     // Allocating memory for previous CPU stats
-    CPUStats* cpuPreviousStats = (CPUStats*)malloc((unsigned long) numCores * sizeof(CPUStats));
+    CPUStats* cpuPreviousStats = (CPUStats*)calloc((size_t)numCores, sizeof(CPUStats));
     if(cpuPreviousStats == NULL){
-        pthread_mutex_lock(&mutex_printing);
-
-        const char* message = "*** Analyzer: Error allocating memory for CPU previous stats\n";
-        printf("%s\n", message);
-        enqueueMessage(message);
-
-        pthread_mutex_unlock(&mutex_printing);
+        printErrorMessage("*** Analyzer: Error allocating memory for CPU previous stats\n");
+        free(cpuStats);
+        pthread_exit(NULL);
     }
     // Allocating memory for percentage CPU stats
-    cpuUsage = (CPUUsage*)malloc((unsigned long) numCores * sizeof(CPUUsage));
+    cpuUsage = (CPUUsage*)malloc((unsigned long)numCores * sizeof(CPUUsage));
     if(cpuUsage == NULL){
-        pthread_mutex_lock(&mutex_printing);
-
-        const char* message = "*** Analyzer: Error allocating memory for percentage CPU stats\n";
-        printf("%s\n", message);
-        enqueueMessage(message);
-        
-        pthread_mutex_unlock(&mutex_printing);
+        printErrorMessage("*** Analyzer: Error allocating memory for percentage CPU stats\n");
+        free(cpuStats);
+        free(cpuPreviousStats);
+        pthread_exit(NULL);
     }
     // Setting initial cores' usages
-    setInitialCoreUsage(cpuStats, numCores);
+    //setInitialCoreUsage(cpuStats, numCores);
 
     while(!sigterm){
         // Setting flag for watchdog

@@ -98,7 +98,6 @@ void* watchdog(void *args __attribute__((unused))){
             pthread_mutex_lock(&mutex_printing);
 
             for(short i = 0; i < NUM_THREADS; i++){
-                //printf("Thread %hi's last notification time: %ld\n", i, threadFlagTimes[i]);
                 if(threadFlags[i] == 0){
                     sprintf(message, "*** Thread %hi stopped working", i);
                     printf("%s\n", message);
@@ -119,9 +118,7 @@ void* watchdog(void *args __attribute__((unused))){
             break;
         }
         // Reset thread flags
-        for(short i = 0; i < NUM_THREADS; i++){
-            threadFlags[i] = 0;
-        }
+        memset(threadFlags, 0, (NUM_THREADS) * sizeof(bool));
 
         atomic_store(&watchdogPriority, false);
 

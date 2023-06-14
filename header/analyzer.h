@@ -35,8 +35,6 @@
     short getNumCores(void);
     // Function saving CPU core data into structure
     void getCoreUsage(CPUStats* cpuStats, short numCores);
-    // Function setting initial values of structure elements to 0
-    void setInitialCoreUsage(CPUStats* cpuStats, short numCores);
     // Function saving previous core usage values
     void setPreviousCoreUsage(CPUStats* cpuPreviousStats, CPUStats* cpuStats, short numCores);
     // Function calculating percentage core usage

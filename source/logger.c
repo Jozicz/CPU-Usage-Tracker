@@ -9,9 +9,6 @@
 #include <stdbool.h>
 #include <string.h>
 
-pthread_mutex_t mutex_logging;
-pthread_cond_t cond_messageInQueue;
-
 volatile bool watchdogDead = false;
 // Message queue initialization
 MessageQueue messageQueue;
@@ -38,6 +35,15 @@ void enqueueMessage(const char* message){
     pthread_cond_signal(&cond_messageInQueue);
 
     pthread_mutex_unlock(&mutex_logging);
+}
+
+void printErrorMessage(const char* errorMessage){
+    pthread_mutex_lock(&mutex_printing);
+
+    printf("%s\n", errorMessage);
+    enqueueMessage(errorMessage);
+
+    pthread_mutex_unlock(&mutex_printing);
 }
 
 void* logger(void *args __attribute__((unused))){

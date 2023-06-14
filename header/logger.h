@@ -31,6 +31,8 @@
 
     // Function for adding new message to the message queue
     void enqueueMessage(const char* message);
+    // Function printing an error message in the console and log file
+    void printErrorMessage(const char* errorMessage);
     void* logger(void *args);
 
 #endif /* LOGGER_H */

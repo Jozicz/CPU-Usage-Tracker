@@ -12,8 +12,6 @@
 #include <unistd.h>
 #include <stdbool.h>
 
-pthread_cond_t cond_getNewData;
-
 void cpuUsagePrinting(short numCores){
     char line[41];
     size_t roundedUsage;
