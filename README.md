@@ -73,5 +73,8 @@ At the start of each program's instance, a new log text file is created in **log
 22:34:01	*** SIGTERM signal caught - killing all threads
 ```
 ### Memory management
+<p align="justify">
 During implementation, the program was tested for potential memory management errors and threading bugs using **valgrind**:
+</p>
+
 ![valgrind](./valgrind.png)
